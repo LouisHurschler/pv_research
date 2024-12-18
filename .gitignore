@@ -1,0 +1,11 @@
+archive
+data
+data_backup
+
+.direnv
+out
+figures
+
+scripts_lukas
+qgis_data
+ TODO.md
