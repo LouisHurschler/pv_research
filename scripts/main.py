@@ -3,6 +3,7 @@ from preprocess_data import preprocess_data
 from plotting import *
 from data_creation import generate_data
 import os
+import time
 
 
 def generate_plot_of_single_file(dirname: str, filename: str):
@@ -12,7 +13,7 @@ def generate_plot_of_single_file(dirname: str, filename: str):
     generate_time_plot_with_classes_with_pv_on_best_roof(
         data, dirname, filename
     )
-    data_trimmed = remove_large_plants(data, threshold=30)
+    data_trimmed = remove_large_plants(data, threshold=100)
 
     generate_time_plot_with_classes_with_pv_on_best_roof(
         data_trimmed, dirname, filename, app="_trimmed"
@@ -71,6 +72,7 @@ def run_canton(
 if __name__ == "__main__":
     # preprocess_data()
 
-    generate_plot_of_single_file("out/municipalities", "Zürich")
+    # generate_plot_of_single_file("out/municipalities/", "Sempach")
+    # generate_plot_of_single_file("out/municipalities", "Zürich")
     # run_municipal(have_to_generate_data=False)
-    run_canton()
+    run_canton(have_to_generate_data=False)

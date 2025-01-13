@@ -3,6 +3,7 @@ import os
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import time
 
 
 def fill_missing_indexes(data: gpd.GeoDataFrame):
@@ -105,16 +106,20 @@ def generate_time_plot_with_classes_with_pv_on_best_roof(
     unique_households_with_pv = data_with_PV["SB_UUID"].unique()
     # TODO: create an efficient datastructure with 3 different entries: BeginningOfOperation(time format), class (1-5), TotalPower(float)
     # create 5 series to plot them efficiently
+
     datapoints = {
-        "1": pd.Series(dtype=float),
-        "2": pd.Series(dtype=float),
-        "3": pd.Series(dtype=float),
-        "4": pd.Series(dtype=float),
-        "5": pd.Series(dtype=float),
+        "1": {"time": [], "value": []},
+        "2": {"time": [], "value": []},
+        "3": {"time": [], "value": []},
+        "4": {"time": [], "value": []},
+        "5": {"time": [], "value": []},
     }
 
-    for unique_uuid in unique_households_with_pv:
-        house_data = data[data["SB_UUID"] == unique_uuid]
+    good_houses = data[data["SB_UUID"].isin(unique_households_with_pv)]
+
+    for _, house_data in good_houses.groupby("SB_UUID"):
+        # house_data = good_houses[good_houses["SB_UUID"] == unique_uuid]
+
         best_class = max(house_data["KLASSE"])
         try:
             total_power = house_data["TotalPower"].dropna().iloc[0]
@@ -127,12 +132,15 @@ def generate_time_plot_with_classes_with_pv_on_best_roof(
             house_data["BeginningOfOperation"].dropna().iloc[0]
         )
 
-        datapoints[str(best_class)] = pd.concat(
-            [
-                datapoints[str(best_class)],
-                pd.Series([total_power], index=[beginning_of_operation]),
-            ]
+        datapoints[str(best_class)]["time"].append(beginning_of_operation)
+        datapoints[str(best_class)]["value"].append(total_power)
+
+    for roof_quality in datapoints.keys():
+        datapoints[roof_quality] = pd.Series(
+            datapoints[roof_quality]["value"],
+            index=datapoints[roof_quality]["time"],
         )
+
     for class_idx in datapoints.keys():
         loc_data = datapoints[class_idx]
         sum1 = loc_data.sum()
@@ -146,8 +154,21 @@ def generate_time_plot_with_classes_with_pv_on_best_roof(
 
         datapoints[class_idx] = unique_data
 
+    # skip empty data, could be done better
+    is_empty = True
+    for idx in datapoints.keys():
+        if not datapoints[idx].empty:
+            is_empty = False
+    if is_empty:
+        print(f"no datapoints in {filename}")
+        return
+
     whole_data = pd.concat(
-        [datapoints[idx] for idx in datapoints.keys()]
+        [
+            datapoints[idx]
+            for idx in datapoints.keys()
+            if not datapoints[idx].empty
+        ]
     ).sort_index()
     whole_data = whole_data.groupby(whole_data.index).sum()
     whole_data *= 0.0
@@ -177,10 +198,13 @@ def generate_time_plot_with_classes_with_pv_on_best_roof(
 def remove_large_plants(
     data: gpd.GeoDataFrame, threshold: float = 100
 ) -> gpd.GeoDataFrame:
-    data_with_large_plants = data[data["TotalPower"] >= threshold]
-    for uuid in data_with_large_plants["SB_UUID"].unique():
-        data = data[data["SB_UUID"] != uuid]
-    return data
+
+    unique_uuids = data_with_large_plants = data[
+        data["TotalPower"] >= threshold
+    ]["SB_UUID"].unique()
+
+    filtered_data = data[~data["SB_UUID"].isin(unique_uuids)]
+    return filtered_data
 
 
 def generate_diff_diff_plot(
