@@ -55,6 +55,7 @@ def cleanup_data(data: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         "KT_KZ",
         "geometry",
         "BeginningOfOperation",
+        "STROMERTRAG",
     ]
     for keep in list_to_keep:
         if keep not in list_of_keys:
