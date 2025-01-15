@@ -4,6 +4,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import time
+import datetime
 
 
 def fill_missing_indexes(data: gpd.GeoDataFrame):
@@ -12,6 +13,33 @@ def fill_missing_indexes(data: gpd.GeoDataFrame):
     full_index.update(data)
 
     return full_index
+
+
+def cleanup_data(
+    data: gpd.GeoDataFrame,
+    threshold: int,
+    start_date,
+    rolling_mean_windows_size_days: int = 500,
+) -> gpd.GeoDataFrame:
+    data = remove_large_plants(data, threshold=threshold)
+    data = data[data["BeginningOfOperation"] > start_date]
+    data_with_PV = data[data["SubCategory"] == "with_PV"]
+    data_with_PV = data_with_PV.dropna()
+    data_with_PV["BeginningOfOperation"] = np.asarray(
+        data_with_PV["BeginningOfOperation"], dtype="datetime64[s]"
+    )
+    data_with_PV.set_index("BeginningOfOperation", inplace=True)
+    data_with_PV = data_with_PV.sort_index()
+    data_with_PV["cumulatedPower"] = data_with_PV["TotalPower"].cumsum()
+
+    data_with_PV["rollingMean"] = (
+        data_with_PV["TotalPower"]
+        .rolling(datetime.timedelta(days=rolling_mean_windows_size_days))
+        .sum()
+        * 365
+        / rolling_mean_windows_size_days
+    )
+    return data_with_PV
 
 
 def generate_roof_quality_plot(
@@ -94,14 +122,7 @@ def generate_building_times_plot(
     )
 
 
-# working but slow, could be much more efficient
-def generate_time_plot_with_classes_with_pv_on_best_roof(
-    data: gpd.GeoDataFrame, dirname: str, filename: str, app: str = ""
-):
-    plt.clf()
-    plt.title(filename)
-    plt.ylabel("total Power installed [kW]")
-    plt.xlabel("date")
+def data_to_class_data(data: gpd.GeoDataFrame) -> dict:
     data_with_PV = data[data["SubCategory"] == "with_PV"]
     unique_households_with_pv = data_with_PV["SB_UUID"].unique()
     # TODO: create an efficient datastructure with 3 different entries: BeginningOfOperation(time format), class (1-5), TotalPower(float)
@@ -153,6 +174,33 @@ def generate_time_plot_with_classes_with_pv_on_best_roof(
         ) / sum1
 
         datapoints[class_idx] = unique_data
+
+    return datapoints
+
+
+# working but slow, could be much more efficient
+def generate_time_plot_with_classes_with_pv_on_best_roof(
+    data: gpd.GeoDataFrame, dirname: str, filename: str, app: str = ""
+):
+    plt.clf()
+    plt.title(filename)
+    plt.ylabel("total Power installed [kW]")
+    plt.xlabel("date")
+    data_with_PV = data[data["SubCategory"] == "with_PV"]
+    unique_households_with_pv = data_with_PV["SB_UUID"].unique()
+    # TODO: create an efficient datastructure with 3 different entries: BeginningOfOperation(time format), class (1-5), TotalPower(float)
+    # create 5 series to plot them efficiently
+
+    # skip empty data, could be done better
+    is_empty = True
+    for idx in datapoints.keys():
+        if not datapoints[idx].empty:
+            is_empty = False
+    if is_empty:
+        print(f"no datapoints in {filename}")
+        return {}
+
+    datapoints = data_to_class_data(data)
 
     # skip empty data, could be done better
     is_empty = True
@@ -253,3 +301,177 @@ def generate_diff_diff_plot(
 
     plt.plot(filled_yearly_data.diff().diff())
     plt.savefig(os.path.join(dirname, filename, f"diff_diff_{filename}.pdf"))
+
+
+# note that diff n diff is a bad name for this, change this in the future or remove the whole function
+# percentage of built pv plants are calculated for all files (municipalities or cantons)
+# in files and dates in dates
+def calculate_diff_n_diff(
+    dirname: str,
+    files: list,
+    dates: list,
+    output: str = "out/diff_n_diff.json",
+):
+    result = {"dates": dates}
+    # assume 1000 kWh / year per kwp
+    power_to_yearly_energy_factor = 1000
+    for file in files:
+        data = gpd.read_file(os.path.join(dirname, file, f"{file}.gpkg"))
+        # cut off all big pv plants
+        data = remove_large_plants(data, threshold=100)
+
+        total_theoretical_energy = sum(data["STROMERTRAG"])
+        percentage_installed = []
+        for date in dates:
+            percentage_installed.append(
+                sum(data[data["BeginningOfOperation"] <= date]["TotalPower"])
+                * power_to_yearly_energy_factor
+                / total_theoretical_energy
+            )
+        result[file] = percentage_installed
+
+    with open(output, "w") as outfile:
+        json.dump(result, outfile, indent=10)
+
+
+def plot_diff_n_diff(
+    name1: str, name2: str, input_file: str = "out/diff_n_diff.json"
+):
+    plt.clf()
+    data = pd.read_json(input_file)
+    plt.xlabel("date")
+    plt.ylabel("percentage of pv coverage")
+    plt.title(f"pv coverage of {name1} and {name2}")
+    plt.plot(data["dates"], data[name1], label=name1)
+    plt.plot(data["dates"], data[name2], label=name2)
+    plt.plot(
+        data["dates"],
+        data[name2] - data[name1],
+        label=f"differene ({name2} - {name1})",
+    )
+    plt.legend()
+    plt.grid()
+    plt.savefig(f"out/diff_n_diff/{name1}_{name2}.pdf")
+
+
+def plot_two_locations(
+    name1: str,
+    name2: str,
+    trimming_threshold: int = 100,
+    input_dir: str = "out/municipalities",
+):
+
+    plt.clf()
+    data1 = gpd.read_file(os.path.join(input_dir, name1, f"{name1}.gpkg"))
+    data2 = gpd.read_file(os.path.join(input_dir, name2, f"{name2}.gpkg"))
+
+    start_date = "2013"
+    data1_with_PV = cleanup_data(data1, trimming_threshold, start_date)
+    data2_with_PV = cleanup_data(data2, trimming_threshold, start_date)
+
+    color1 = "b"
+    color2 = "g"
+
+    fig, ax1 = plt.subplots()
+    plt.title(f"Vergleich installierte Gesamtleistung {name1} - {name2}")
+    plt.xlabel("Datum")
+
+    ax1.plot(data1_with_PV["cumulatedPower"], color=color1, label=name1)
+    ax1.tick_params(axis="y", labelcolor=color1)
+    ax1.set_ylabel(f"Gesamtleistung {name1} [kW]", color=color1)
+
+    ax2 = ax1.twinx()
+    ax2.plot(data2_with_PV["cumulatedPower"], color=color2, label=name2)
+    ax2.tick_params(axis="y", labelcolor=color2)
+    ax2.set_ylabel(f"Gesamtleistung {name2} [kW]", color=color2)
+
+    fig.tight_layout()
+    plt.grid(linestyle="--")
+
+    # plt.show()
+    plt.savefig(
+        os.path.join("out", "plots", f"{name1}_{name2}_comparison.pdf")
+    )
+
+    plt.clf()
+
+    fig, ax1 = plt.subplots()
+    plt.title(f"Vergleich Installationsgeschwindigkeit {name1} - {name2}")
+    plt.xlabel("Datum")
+
+    ax1.plot(data1_with_PV["rollingMean"], color=color1, label=name1)
+    ax1.tick_params(axis="y", labelcolor=color1)
+    ax1.set_ylabel(
+        f"Installationsgeschwindigkeit {name1} [installierte kWp pro Jahr]",
+        color=color1,
+        fontsize=7,
+    )
+
+    ax2 = ax1.twinx()
+    ax2.plot(data2_with_PV["rollingMean"], color=color2, label=name2)
+    ax2.tick_params(axis="y", labelcolor=color2)
+    ax2.set_ylabel(
+        f"Installationsgeschwindigkeit {name2} [installierte kWp pro Jahr]",
+        color=color2,
+        fontsize=7,
+    )
+
+    # ax2.annotate(
+    #     "Einführung Förderrichtlinie Energie Aarau",
+    #     xy=(
+    #         pd.Timestamp("2018-03-14"),
+    #         max(data2_with_PV["rollingMean"]) * 0.05,
+    #     ),
+    #     xytext=(
+    #         pd.Timestamp("2015-07-01"),
+    #         max(data2_with_PV["rollingMean"]) * 0.8,
+    #     ),
+    #     arrowprops=dict(facecolor="black", arrowstyle="->", lw=0.5),
+    #     fontsize=7,
+    # )
+
+    fig.tight_layout()
+    plt.grid(linestyle="--")
+
+    # plt.show()
+    plt.savefig(
+        os.path.join("out", "plots", f"{name1}_{name2}_installation.pdf")
+    )
+
+    fig, axes1 = plt.subplots(5, 1, sharex=True)
+    for i, ax in enumerate(axes1):
+        ax.set_ylabel(f"Klasse {i+1}")
+    class_dict_1 = data_to_class_data(data1)
+    colors = ["b", "r", "g", "y", "o"]
+
+    for i, ax in enumerate(axes1):
+        loc_data = class_dict_1[str(i + 1)]
+        if not loc_data.empty:
+            loc_data = class_dict_1[str(i + 1)]
+            rolling_length = min(len(loc_data), 500)
+            ax.plot(
+                loc_data.rolling(datetime.timedelta(days=rolling_length)).sum()
+                * 365
+                / rolling_length,
+                color=color1,
+            )
+    axes2 = [ax.twinx() for ax in axes1]
+    class_dict_2 = data_to_class_data(data2)
+
+    for i, ax in enumerate(axes2):
+        loc_data = class_dict_2[str(i + 1)]
+        if not loc_data.empty:
+            loc_data = class_dict_2[str(i + 1)]
+            rolling_length = min(len(loc_data), 500)
+            ax.plot(
+                loc_data.rolling(datetime.timedelta(days=rolling_length)).sum()
+                * 365
+                / rolling_length,
+                color=color2,
+            )
+
+    plt.savefig(
+        os.path.join("out", "plots", f"{name1}_{name2}_overview_classes.pdf")
+    )
+
+    # TODO: do comparison for all 5 subclasses, plot them in subplots and save result
