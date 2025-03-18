@@ -33,8 +33,14 @@
                     geopandas
                     fiona
                     
+                    scipy
         #             tkinter
         #             paho-mqtt
+                    pyarrow
+                    swifter
+                    ray
+                    dask
+                    dask-expr
                   ]))
         ];
         buildInputs = with pkgs; [ 

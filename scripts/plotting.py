@@ -1,3 +1,4 @@
+import matplotlib
 import matplotlib.pyplot as plt
 import os
 import geopandas as gpd
@@ -5,6 +6,78 @@ import numpy as np
 import pandas as pd
 import time
 import datetime
+from scipy.stats import gaussian_kde
+from matplotlib.ticker import MaxNLocator
+
+
+def gaussian_kernel(size, sigma):
+    x = np.linspace(-size // 2, size // 2, size)
+    kernel = np.exp(-(x**2) / (2 * sigma**2))
+    return kernel / kernel.sum()  # Normalize
+
+
+def squared_kernel(size):
+    kernel = np.linspace(0, 1, size) * (1.0 - np.linspace(0, 1, size))
+    scaling_factor = 6.0 * (size - 1.0) / (size * (size - 2))
+    return kernel * scaling_factor
+
+
+# apply a linear weighted sum of window, preserves integral
+def own_flattening_function(values):
+    # rolling mean:
+    # return values.sum() / len(values)
+    N = len(values)
+    if N <= 2:
+        return 0.0
+    # kernel = squared_kernel(N)
+    kernel = gaussian_kernel(N, 200.0)
+    return (values * kernel).sum()
+
+
+def custom_running_mean(data: pd.Series, rolling_mean_windows_size_days: int):
+    # add missing days
+    data = data.resample("D").sum()
+    first_date = data.index[0]
+    last_date = data.index[-1]
+    # append zeros for boundary effect
+    data = pd.concat(
+        [
+            pd.Series(
+                # [0.0] * rolling_mean_windows_size_days,
+                data.iloc[: rolling_mean_windows_size_days // 2].values[::-1],
+                index=pd.date_range(
+                    start=first_date
+                    - datetime.timedelta(
+                        days=rolling_mean_windows_size_days // 2
+                    ),
+                    periods=rolling_mean_windows_size_days // 2,
+                ),
+            ),
+            data,
+            pd.Series(
+                # [0.0] * rolling_mean_windows_size_days,
+                data.iloc[-rolling_mean_windows_size_days // 2 :].values[::-1],
+                index=pd.date_range(
+                    start=last_date + datetime.timedelta(days=1),
+                    periods=rolling_mean_windows_size_days // 2,
+                ),
+            ),
+        ]
+    )
+    rolling_window = (
+        data.rolling(
+            window=datetime.timedelta(days=rolling_mean_windows_size_days),
+            center=True,  # if only accounts for previous values
+        ).apply(own_flattening_function)
+        * 356
+    )  # multiply by 356 to get yearly rate
+    # remove padding
+    rolling_window = rolling_window.iloc[
+        rolling_mean_windows_size_days
+        // 2 : -rolling_mean_windows_size_days
+        // 2
+    ]
+    return rolling_window
 
 
 def fill_missing_indexes(data: gpd.GeoDataFrame):
@@ -31,6 +104,20 @@ def cleanup_data(
     data_with_PV.set_index("BeginningOfOperation", inplace=True)
     data_with_PV = data_with_PV.sort_index()
     data_with_PV["cumulatedPower"] = data_with_PV["TotalPower"].cumsum()
+    cumulated_sum = data_with_PV["TotalPower"].cumsum()
+
+    smoothed1 = (
+        data_with_PV["TotalPower"].cumsum().resample("W").last().ffill().diff()
+    )
+    numeric_timestamps = cumulated_sum.index.astype(np.int64)
+    kde = gaussian_kde(numeric_timestamps, weights=cumulated_sum)
+    smoothed_values = kde(numeric_timestamps)
+
+    smoothed_cumulated = pd.Series(smoothed_values, index=cumulated_sum.index)
+    smoothed = smoothed_cumulated
+    smoothed = cumulated_sum
+
+    # smoothed = smoothed_cumulated.resample("M").last().ffill().diff()
 
     data_with_PV["rollingMean"] = (
         data_with_PV["TotalPower"]
@@ -39,64 +126,118 @@ def cleanup_data(
         * 365
         / rolling_mean_windows_size_days
     )
-    return data_with_PV
+    smoothed = custom_running_mean(
+        data_with_PV["TotalPower"], rolling_mean_windows_size_days
+    )
+    return data_with_PV, smoothed
 
 
 def generate_roof_quality_plot(
-    data: gpd.GeoDataFrame, dirname: str, filename: str
+    data: gpd.GeoDataFrame,
+    dirname: str,
+    filename: str,
+    class_name: str = "KLASSE",
 ):
     data_with_PV = data[data["SubCategory"] == "with_PV"]
     data_without_PV = data[data["SubCategory"] != "with_PV"]
 
-    roof_count_with = data_with_PV["KLASSE"].value_counts().sort_index()
-    roof_count_without = data_without_PV["KLASSE"].value_counts().sort_index()
+    roof_count_with = data_with_PV[class_name].value_counts().sort_index()
+    roof_count_without = (
+        data_without_PV[class_name].value_counts().sort_index()
+    )
 
-    if len(roof_count_with) != 5:
-        roof_count_with = fill_missing_indexes(roof_count_with)
+    if len(roof_count_with) != len(roof_count_without):
+        if len(roof_count_with) != 5:
+            roof_count_with = fill_missing_indexes(roof_count_with)
 
-    if len(roof_count_without) != 5:
-        roof_count_without = fill_missing_indexes(roof_count_without)
+        if len(roof_count_without) != 5:
+            roof_count_without = fill_missing_indexes(roof_count_without)
+    # if filename == "Aarau":
+    #     roof_count_with = roof_count_with.drop(5)
+    #     roof_count_without = roof_count_without.drop(5)
 
     # clear old data
     plt.clf()
-    plt.title(filename)
+
+    fontsize = 10
+    # plt.rc("text", usetex=True)
+
+    plt.rc("text", usetex=True)
+
+    matplotlib.rcParams["mathtext.fontset"] = "custom"
+    matplotlib.rcParams["mathtext.rm"] = "Bitstream Vera Sans"
+    matplotlib.rcParams["mathtext.it"] = "Bitstream Vera Sans:italic"
+    matplotlib.rcParams["mathtext.bf"] = "Bitstream Vera Sans:bold"
+
+    fig, ax1 = plt.subplots(figsize=(5, 4))
+
+    plt.title(
+        f"Distribution of PV Installations: Municipality {filename}",
+        fontsize=fontsize,
+    )
+    # color_green = "#2CA02C"
+    # color_red = "#D62728"
+    color_green = "#27AE60"
+    color_red = "#E74C3C"
+    color_blue = "#1F77B4"
 
     # add barplots
-    plt.bar(
+    ax1.bar(
         roof_count_with.index,
         roof_count_with.values,
-        label="Number of roofs with PV",
-        color="green",
+        label="Roofs with PV",
+        color=color_green,
     )
-    plt.bar(
+    ax1.bar(
         roof_count_without.index,
         roof_count_without.values,
-        label="Number of roofs without PV",
+        label="Roofs without PV",
         bottom=roof_count_with.values,
-        color="red",
+        color=color_red,
     )
+    ax1.set_xlabel("Rooftop PV-Suitability", fontsize=fontsize)
 
-    percentage_pv = roof_count_with / (roof_count_with + roof_count_without)
+    percentage_pv = (
+        100 * roof_count_with / (roof_count_with + roof_count_without)
+    )
     max_percentage = max(percentage_pv)
     max_value = max(roof_count_with + roof_count_without)
-    plt.ylabel("Number of Rooftops")
-    plt.legend(loc="upper left")
+    ax1.set_ylabel("Number of Rooftops")
+    # plt.legend(loc="upper left")
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    if filename == "Aarau":
+        roof_count_with = roof_count_with.drop(5)
+        percentage_pv = percentage_pv.drop(5)
 
-    plt.twinx()
-    plt.plot(
+    ax2 = ax1.twinx()
+    ax2.plot(
         roof_count_with.index,
         percentage_pv,
         label="Percentage with PV",
+        color=color_blue,
+    )
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    legend = ax2.legend(
+        handles1 + handles2,
+        labels1 + labels2,
+        loc="upper left",
+        fontsize=fontsize,
     )
 
-    plt.ylabel("percentage of PV plants on roofs")
+    ax2.set_ylabel(
+        r"Percentage of Roofs with PV Systems [\%]", fontsize=fontsize
+    )
+
+    plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
+    plt.tight_layout()
 
     plt.xlabel("Klasse")
-    plt.legend(loc="upper right")
+    # plt.legend(loc="upper right")
+    if not os.path.exists(os.path.join(dirname, filename)):
+        os.makedirs(os.path.join(dirname, filename))
+
     plt.savefig(
-        os.path.join(
-            dirname, filename, f"roof_quality_if_on_best_roof_filename.pdf"
-        )
+        os.path.join(dirname, filename, f"roof_quality_{filename}.pdf")
     )
 
 
@@ -118,7 +259,7 @@ def generate_building_times_plot(
     plt.plot(data_with_PV["cumulatedPower"])
     plt.tight_layout()
     plt.savefig(
-        os.path.join(dirname, filename, f"pv_building_times_{filename}.pdf")
+        os.path.join(dirname, filename, f"pv_building_times_{filename}.svg")
     )
 
 
@@ -239,7 +380,7 @@ def generate_time_plot_with_classes_with_pv_on_best_roof(
 
     plt.legend()
     plt.savefig(
-        os.path.join(dirname, filename, f"pv_evolution_{filename}{app}.pdf")
+        os.path.join(dirname, filename, f"pv_evolution_{filename}{app}.svg")
     )
 
 
@@ -279,28 +420,28 @@ def generate_diff_diff_plot(
     filled_yearly_data = yearly_data.reindex(full_years, fill_value=0)
 
     plt.plot(filled_yearly_data)
-    plt.savefig(os.path.join(dirname, filename, f"new_pv_{filename}.pdf"))
+    plt.savefig(os.path.join(dirname, filename, f"new_pv_{filename}.svg"))
 
     plt.clf()
     plt.title(filename)
     plt.ylabel("Gesamtleistung [kW]")
 
     plt.plot(np.cumsum(filled_yearly_data))
-    plt.savefig(os.path.join(dirname, filename, f"sum_new_pv_{filename}.pdf"))
+    plt.savefig(os.path.join(dirname, filename, f"sum_new_pv_{filename}.svg"))
 
     plt.clf()
     plt.title(filename)
     plt.ylabel("Gesamtleistung [kW]")
 
     plt.plot(filled_yearly_data.diff())
-    plt.savefig(os.path.join(dirname, filename, f"diff_{filename}.pdf"))
+    plt.savefig(os.path.join(dirname, filename, f"diff_{filename}.svg"))
 
     plt.clf()
     plt.title(filename)
     plt.ylabel("Gesamtleistung [kW]")
 
     plt.plot(filled_yearly_data.diff().diff())
-    plt.savefig(os.path.join(dirname, filename, f"diff_diff_{filename}.pdf"))
+    plt.savefig(os.path.join(dirname, filename, f"diff_diff_{filename}.svg"))
 
 
 # note that diff n diff is a bad name for this, change this in the future or remove the whole function
@@ -351,7 +492,7 @@ def plot_diff_n_diff(
     )
     plt.legend()
     plt.grid()
-    plt.savefig(f"out/diff_n_diff/{name1}_{name2}.pdf")
+    plt.savefig(f"out/diff_n_diff/{name1}_{name2}.svg")
 
 
 def plot_two_locations(
@@ -366,11 +507,26 @@ def plot_two_locations(
     data2 = gpd.read_file(os.path.join(input_dir, name2, f"{name2}.gpkg"))
 
     start_date = "2013"
-    data1_with_PV = cleanup_data(data1, trimming_threshold, start_date)
-    data2_with_PV = cleanup_data(data2, trimming_threshold, start_date)
+    window_size = 2000
+    data1_with_PV, smoothed_1 = cleanup_data(
+        data1,
+        trimming_threshold,
+        start_date,
+        rolling_mean_windows_size_days=window_size,
+    )
+    data2_with_PV, smoothed_2 = cleanup_data(
+        data2,
+        trimming_threshold,
+        start_date,
+        rolling_mean_windows_size_days=window_size,
+    )
 
-    color1 = "b"
-    color2 = "g"
+    # color1 = "#4C72B0"  # blue
+    # color2 = "#DD8452"  # orange
+    color1 = "#001C7F"  # dark blue
+    color2 = "#017517"  # dark green
+    # color1 = "#4878CF"  # muted blue
+    # color2 = "#6ACC64"  # muted green
 
     fig, ax1 = plt.subplots()
     plt.title(f"Vergleich installierte Gesamtleistung {name1} - {name2}")
@@ -390,53 +546,126 @@ def plot_two_locations(
 
     # plt.show()
     plt.savefig(
-        os.path.join("out", "plots", f"{name1}_{name2}_comparison.pdf")
+        os.path.join("out", "plots", f"{name1}_{name2}_comparison.svg")
     )
 
+    ######################## installation plot begin #######################################
     plt.clf()
 
-    fig, ax1 = plt.subplots()
-    plt.title(f"Vergleich Installationsgeschwindigkeit {name1} - {name2}")
-    plt.xlabel("Datum")
+    fontsize = 10
+    # plt.rc("text", usetex=True)
 
-    ax1.plot(data1_with_PV["rollingMean"], color=color1, label=name1)
-    ax1.tick_params(axis="y", labelcolor=color1)
-    ax1.set_ylabel(
-        f"Installationsgeschwindigkeit {name1} [installierte kWp pro Jahr]",
+    plt.rc("text", usetex=True)
+
+    matplotlib.rcParams["mathtext.fontset"] = "custom"
+    matplotlib.rcParams["mathtext.rm"] = "Bitstream Vera Sans"
+    matplotlib.rcParams["mathtext.it"] = "Bitstream Vera Sans:italic"
+    matplotlib.rcParams["mathtext.bf"] = "Bitstream Vera Sans:bold"
+    fig, ax1 = plt.subplots(figsize=(6, 4))
+    ax1.set_title(
+        f"PV Installation Rate Comparison: Municipalities {name1} and {name2}",
+        fontsize=fontsize,
+    )
+    ax1.set_xlabel("Year", fontsize=fontsize)
+
+    test_data = pd.Series(
+        data=np.linspace(0, 2000, num=len(data2_with_PV["rollingMean"])),
+        index=data2_with_PV.index,
+    )
+    ax1.plot(
+        smoothed_1,
+        # data1_with_PV["rollingMean"],
+        # test_data,
         color=color1,
-        fontsize=7,
+        label=f"PV Installation Rate in {name1} [kWp/year]",
+        linestyle="-",
+        linewidth=0.8,
+    )
+    # ax1.plot(smoothed_1, color=color1, label=name1)
+    ax1.tick_params(axis="y", labelcolor=color1, labelsize=fontsize)
+    ax1.tick_params(axis="x", labelsize=fontsize)
+
+    ax1.set_ylabel(
+        r"\textbf{--------} \ \ \ PV Installation Rate in Aarau [kWp/year]",
+        color=color1,
+        fontsize=fontsize,
     )
 
     ax2 = ax1.twinx()
-    ax2.plot(data2_with_PV["rollingMean"], color=color2, label=name2)
-    ax2.tick_params(axis="y", labelcolor=color2)
-    ax2.set_ylabel(
-        f"Installationsgeschwindigkeit {name2} [installierte kWp pro Jahr]",
+    ax2.plot(
+        smoothed_2,
+        # data2_with_PV["rollingMean"],
+        # test_data.rolling(datetime.timedelta(days=50)).sum() / 50,
         color=color2,
-        fontsize=7,
+        label=f"PV Installation Rate in {name2} [kWp/year]",
+        linestyle="--",
+        linewidth=0.8,
     )
+    ax2.tick_params(axis="y", labelcolor=color2, labelsize=fontsize)
+    ax2.set_ylabel(
+        r"\textbf{-- -- --} \ \ \ PV Installation Rate in Thun [kWp/year]",
+        color=color2,
+        fontsize=fontsize,
+    )
+    # ax2.set_yticks([0, 500, 1000, 1500, 2000, 2500])
 
-    # ax2.annotate(
-    #     "Einführung Förderrichtlinie Energie Aarau",
-    #     xy=(
-    #         pd.Timestamp("2018-03-14"),
-    #         max(data2_with_PV["rollingMean"]) * 0.05,
-    #     ),
-    #     xytext=(
-    #         pd.Timestamp("2015-07-01"),
-    #         max(data2_with_PV["rollingMean"]) * 0.8,
-    #     ),
-    #     arrowprops=dict(facecolor="black", arrowstyle="->", lw=0.5),
-    #     fontsize=7,
-    # )
+    ax2.annotate(
+        "Introduction of Aarau's new energy support directive",
+        xy=(
+            pd.Timestamp("2018-03-14"),
+            max(data2_with_PV["rollingMean"]) * 0.28,
+        ),
+        xytext=(
+            pd.Timestamp("2013-11-01"),
+            max(data2_with_PV["rollingMean"]) * 1.45,
+            # max(data2_with_PV["rollingMean"]) * 1.4,
+            # max(data2_with_PV["rollingMean"]) * 0.8,
+        ),
+        arrowprops=dict(facecolor="black", arrowstyle="->", lw=0.5),
+        fontsize=fontsize,
+    )
 
     fig.tight_layout()
-    plt.grid(linestyle="--")
+    ax1.grid(linestyle="--", axis="y")
 
+    # handles1, labels1 = ax1.get_legend_handles_labels()
+    # handles2, labels2 = ax2.get_legend_handles_labels()
+    # legend = ax1.legend(
+    #     handles1 + handles2,
+    #     labels1 + labels2,
+    #     loc="upper left",
+    #     fontsize=fontsize,
+    # )
+    # Align zero points by having the same percentage of negative values
+
+    y1_min, y1_max = ax1.get_ylim()
+    y2_min, y2_max = ax2.get_ylim()
+    percentage_negative = 0.01
+    if y1_min < 0:
+        negative_1 = -y1_min / (y1_max - y1_min)
+        percentage_negative = max(percentage_negative, negative_1)
+    else:
+        negative_1 = 0.0
+    if y2_min < 0:
+        negative_2 = -y2_min / (y2_max - y2_min)
+        percentage_negative = max(percentage_negative, negative_2)
+    else:
+        negative_2 = 0.0
+
+    if percentage_negative != negative_1:
+        y1_min = -(percentage_negative * y1_max) / (1 - percentage_negative)
+        ax1.set_ylim(y1_min, y1_max)
+    if percentage_negative != negative_2:
+        y2_min = -(percentage_negative * y2_max) / (1 - percentage_negative)
+        ax2.set_ylim(y2_min, y2_max)
+
+    # text1.set_color(color1)
+    # text2.set_color(color2)
     # plt.show()
     plt.savefig(
-        os.path.join("out", "plots", f"{name1}_{name2}_installation.pdf")
+        os.path.join("out", "plots", f"{name1}_{name2}_installation.svg")
     )
+    ######################## installation plot end #########################################
 
     fig, axes1 = plt.subplots(5, 1, sharex=True)
     for i, ax in enumerate(axes1):
@@ -471,7 +700,7 @@ def plot_two_locations(
             )
 
     plt.savefig(
-        os.path.join("out", "plots", f"{name1}_{name2}_overview_classes.pdf")
+        os.path.join("out", "plots", f"{name1}_{name2}_overview_classes.svg")
     )
 
     # TODO: do comparison for all 5 subclasses, plot them in subplots and save result
