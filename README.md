@@ -11,5 +11,7 @@ Here are also other sources of electric energy generators included.
 Then, a geodata file is needed for the borders of the municipals. 
 This can be loaded from following plugin: Swiss Geo Downloader
 
-Then, the main script can be run to generate all data and plots. 
-If you want to look at the data graphically, you can open data for every municipality using qgis
+# process the data
+You first have to run the preprocess function (comment it out in main function) to merge the datasets.
+
+Afterwards, you can either look at the data in qgis (output stored in out/households.gpkg) or create some plots using geopandas.

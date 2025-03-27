@@ -1,6 +1,7 @@
 import geopandas as gpd
 import numpy as np
-import time
+
+# import time
 import os
 from tqdm import tqdm
 
@@ -24,33 +25,25 @@ def redistribute_pv_power_to_best_available_roof(
     TODO: make it faster
     """
     total_len = len(data["SB_UUID"].unique())
-    print(total_len)
-    idx = 0
     # data_with = data[data["SubCategory"] == "with_PV"]
     could_fit = 0
     could_not_fit = 0
     print(
         f"total power before redistributing: {data["TotalPower"].sum(skipna=True)}"
     )
-    print("starting redistributiong pv plants")
-    start_time = time.time()
-
-    idx = 0
-
-    print("start sorting values")
     data.sort_values(by="SB_UUID", inplace=True)
-    print("values sorted")
 
     # assign without_pv text and 0 TotalPower at the end
     without_pv_indexes = []
-    print("change to category")
     # change type to category such that no new text has to be stored which increases the efficiency
     data["BeginningOfOperation"] = data["BeginningOfOperation"].astype(
         "category"
     )
     data["SubCategory"] = data["SubCategory"].astype("category")
-    print("changed to category")
 
+    print(
+        f"starting redistribution algorithm for class: {name_class} and used_area: {used_area_m2_per_kwp}"
+    )
     for uuid, data_household in tqdm(data.groupby("SB_UUID"), total=total_len):
         if data_household["SubCategory"].iloc[0] == "without_PV":
             continue
@@ -112,7 +105,6 @@ def redistribute_pv_power_to_best_available_roof(
                     )
                     area_used_for_pv = 0
 
-    print(f"time to redistribute pv plants: {time.time() - start_time}")
     print(
         f"total power after redistributing: {data["TotalPower"].sum(skipna=True)}"
     )

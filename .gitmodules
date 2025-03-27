@@ -1,0 +1,3 @@
+[submodule "graphly"]
+	path = graphly
+	url = https://github.com/zazuko/graphly.git

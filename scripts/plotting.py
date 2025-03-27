@@ -8,6 +8,8 @@ import time
 import datetime
 from scipy.stats import gaussian_kde
 from matplotlib.ticker import MaxNLocator
+from get_tarif_data import *
+from tqdm import tqdm
 
 
 def gaussian_kernel(size, sigma):
@@ -141,17 +143,29 @@ def generate_roof_quality_plot(
     data_with_PV = data[data["SubCategory"] == "with_PV"]
     data_without_PV = data[data["SubCategory"] != "with_PV"]
 
-    roof_count_with = data_with_PV[class_name].value_counts().sort_index()
-    roof_count_without = (
-        data_without_PV[class_name].value_counts().sort_index()
-    )
+    area_with = (
+        data_with_PV.groupby(class_name)["FLAECHE"].sum().rename("area_with")
+    ) / 1000000.0  # in km2
+    # roof_count_with = data_with_PV[class_name].value_counts().sort_index()
+    # print("roof_count_with: ", roof_count_with)
 
-    if len(roof_count_with) != len(roof_count_without):
-        if len(roof_count_with) != 5:
-            roof_count_with = fill_missing_indexes(roof_count_with)
+    area_without = (
+        data_without_PV.groupby(class_name)["FLAECHE"]
+        .sum()
+        .rename("area_without")
+    ) / 1000000.0  # in km2
 
-        if len(roof_count_without) != 5:
-            roof_count_without = fill_missing_indexes(roof_count_without)
+    # roof_count_without = (
+    #     data_without_PV[class_name].value_counts().sort_index()
+    # )
+    # print("roof_count_without: ", roof_count_without)
+
+    # if len(roof_count_with) != len(roof_count_without) or len(roof_count_with) != 5:
+    if len(area_with) != 5:
+        area_with = fill_missing_indexes(area_with)
+
+    if len(area_without) != 5:
+        area_without = fill_missing_indexes(area_without)
     # if filename == "Aarau":
     #     roof_count_with = roof_count_with.drop(5)
     #     roof_count_without = roof_count_without.drop(5)
@@ -169,12 +183,12 @@ def generate_roof_quality_plot(
     matplotlib.rcParams["mathtext.it"] = "Bitstream Vera Sans:italic"
     matplotlib.rcParams["mathtext.bf"] = "Bitstream Vera Sans:bold"
 
-    fig, ax1 = plt.subplots(figsize=(5, 4))
+    fig, ax1 = plt.subplots(figsize=(6, 4))
 
-    plt.title(
-        f"Distribution of PV Installations: Municipality {filename}",
-        fontsize=fontsize,
-    )
+    # plt.title(
+    #     f"Distribution of PV Installations: Municipality {filename}",
+    #     fontsize=fontsize,
+    # )
     # color_green = "#2CA02C"
     # color_red = "#D62728"
     color_green = "#27AE60"
@@ -183,35 +197,34 @@ def generate_roof_quality_plot(
 
     # add barplots
     ax1.bar(
-        roof_count_with.index,
-        roof_count_with.values,
-        label="Roofs with PV",
+        area_with.index,
+        area_with.values,
+        label="Area with PV",
         color=color_green,
     )
     ax1.bar(
-        roof_count_without.index,
-        roof_count_without.values,
-        label="Roofs without PV",
-        bottom=roof_count_with.values,
+        area_without.index,
+        area_without.values,
+        label="Area without PV",
+        bottom=area_with.values,
         color=color_red,
     )
     ax1.set_xlabel("Rooftop PV-Suitability", fontsize=fontsize)
 
-    percentage_pv = (
-        100 * roof_count_with / (roof_count_with + roof_count_without)
-    )
+    percentage_pv = 100 * area_with / (area_with + area_without)
     max_percentage = max(percentage_pv)
-    max_value = max(roof_count_with + roof_count_without)
-    ax1.set_ylabel("Number of Rooftops")
+    max_value = max(area_with + area_without)
+    ax1.set_ylabel(r"Area [$\mathrm{km}^2$]")
     # plt.legend(loc="upper left")
     handles1, labels1 = ax1.get_legend_handles_labels()
-    if filename == "Aarau":
-        roof_count_with = roof_count_with.drop(5)
-        percentage_pv = percentage_pv.drop(5)
+    # was used to create cleaner plots of aarau, can be ignored now
+    # if filename == "Aarau":
+    #     roof_count_with = roof_count_with.drop(5)
+    #     percentage_pv = percentage_pv.drop(5)
 
     ax2 = ax1.twinx()
     ax2.plot(
-        roof_count_with.index,
+        area_with.index,
         percentage_pv,
         label="Percentage with PV",
         color=color_blue,
@@ -225,7 +238,8 @@ def generate_roof_quality_plot(
     )
 
     ax2.set_ylabel(
-        r"Percentage of Roofs with PV Systems [\%]", fontsize=fontsize
+        r"Percentage of Roof Area covered with PV Systems [\%]",
+        fontsize=fontsize,
     )
 
     plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
@@ -237,8 +251,12 @@ def generate_roof_quality_plot(
         os.makedirs(os.path.join(dirname, filename))
 
     plt.savefig(
-        os.path.join(dirname, filename, f"roof_quality_{filename}.pdf")
+        os.path.join(
+            dirname, filename, f"roof_quality_{filename}_{class_name}.jpg"
+        ),
+        dpi=1200,
     )
+    plt.close()
 
 
 def generate_building_times_plot(
@@ -495,16 +513,25 @@ def plot_diff_n_diff(
     plt.savefig(f"out/diff_n_diff/{name1}_{name2}.svg")
 
 
+# This funciton is used to plot the distribution of the installed plants over time for two municipalities.
+# It plots the Power installed and smoothenes it using som e rolling window (currently using gaussian kde)
+# Note that the beginning of operations entry has to be included in the data for each entry with subCategory with_PV
+# The text and arrows are currently hardcoded to aarau and thun, change this if necessary.
 def plot_two_locations(
     name1: str,
     name2: str,
     trimming_threshold: int = 100,
     input_dir: str = "out/municipalities",
 ):
+    ending = "jpg"
 
     plt.clf()
-    data1 = gpd.read_file(os.path.join(input_dir, name1, f"{name1}.gpkg"))
-    data2 = gpd.read_file(os.path.join(input_dir, name2, f"{name2}.gpkg"))
+    data1 = gpd.read_file(
+        os.path.join(input_dir, name1, f"{name1}_5.0_KLASSE2.gpkg")
+    )
+    data2 = gpd.read_file(
+        os.path.join(input_dir, name2, f"{name2}_5.0_KLASSE2.gpkg")
+    )
 
     start_date = "2013"
     window_size = 2000
@@ -520,7 +547,12 @@ def plot_two_locations(
         start_date,
         rolling_mean_windows_size_days=window_size,
     )
-
+    smoothed_1 = smoothed_1[
+        smoothed_1.index < pd.to_datetime("2023-06", format="%Y-%m")
+    ]
+    smoothed_2 = smoothed_2[
+        smoothed_2.index < pd.to_datetime("2023-06", format="%Y-%m")
+    ]
     # color1 = "#4C72B0"  # blue
     # color2 = "#DD8452"  # orange
     color1 = "#001C7F"  # dark blue
@@ -546,7 +578,7 @@ def plot_two_locations(
 
     # plt.show()
     plt.savefig(
-        os.path.join("out", "plots", f"{name1}_{name2}_comparison.svg")
+        os.path.join("out", "plots", f"{name1}_{name2}_comparison." + ending)
     )
 
     ######################## installation plot begin #######################################
@@ -562,10 +594,10 @@ def plot_two_locations(
     matplotlib.rcParams["mathtext.it"] = "Bitstream Vera Sans:italic"
     matplotlib.rcParams["mathtext.bf"] = "Bitstream Vera Sans:bold"
     fig, ax1 = plt.subplots(figsize=(6, 4))
-    ax1.set_title(
-        f"PV Installation Rate Comparison: Municipalities {name1} and {name2}",
-        fontsize=fontsize,
-    )
+    # ax1.set_title(
+    #     f"PV Installation Rate Comparison: Municipalities {name1} and {name2}",
+    #     fontsize=fontsize,
+    # )
     ax1.set_xlabel("Year", fontsize=fontsize)
 
     test_data = pd.Series(
@@ -663,7 +695,10 @@ def plot_two_locations(
     # text2.set_color(color2)
     # plt.show()
     plt.savefig(
-        os.path.join("out", "plots", f"{name1}_{name2}_installation.svg")
+        os.path.join(
+            "out", "plots", f"{name1}_{name2}_installation." + ending
+        ),
+        dpi=1200,
     )
     ######################## installation plot end #########################################
 
@@ -700,7 +735,321 @@ def plot_two_locations(
             )
 
     plt.savefig(
-        os.path.join("out", "plots", f"{name1}_{name2}_overview_classes.svg")
+        os.path.join(
+            "out", "plots", f"{name1}_{name2}_overview_classes." + ending
+        )
     )
 
     # TODO: do comparison for all 5 subclasses, plot them in subplots and save result
+
+
+def plot_price_vs_installation_rate(
+    years: list, municipality: str, data_electricity_prices: pd.DataFrame
+):
+    data_elec_muni = data_electricity_prices[
+        data_electricity_prices["municipality"] == municipality
+    ]
+    # data_elec_muni = data_electricity_prices
+
+    # print(data_elec_muni)
+    electricity_prices = [
+        data_elec_muni[data_elec_muni["year"] == year]["energy"].mean()
+        for year in years
+    ]
+
+    data = gpd.read_file(
+        f"out/municipalities/{municipality}/{municipality}_5.0_KLASSE2.gpkg"
+    )
+
+    # data = gpd.read_file(f"out/households_5.0_KLASSE2.gpkg")
+    data = data[data["KLASSE2"] <= 3]
+
+    data_with_PV = data[data["SubCategory"] == "with_PV"]
+
+    data_with_PV["BeginningOfOperation"] = np.asarray(
+        data_with_PV["BeginningOfOperation"], dtype="datetime64[s]"
+    )
+    data_with_PV = data_with_PV[
+        data_with_PV["BeginningOfOperation"] >= pd.to_datetime(str(min(years)))
+    ]
+
+    data_with_PV.set_index("BeginningOfOperation", inplace=True)
+    data_with_PV = data_with_PV.sort_index()
+    yearly_installations = (
+        data_with_PV["TotalPower"]
+        .cumsum()
+        .resample("YE")
+        .last()
+        .ffill()
+        .diff()
+    )
+    plt.plot(yearly_installations, label="yearly installations (Klasse2 <= 3)")
+
+    # print(electricity_prices)
+    # print(
+    #     np.nanmax(
+    #         yearly_installations.values,
+    #     )
+    # )
+    # print(np.nanmax(electricity_prices))
+    scaling = np.nanmax(yearly_installations.values) / np.nanmax(
+        electricity_prices
+    )
+    normed_elec_prices = np.array(
+        [elec * scaling for elec in electricity_prices]
+    )
+    plt.plot(
+        [pd.to_datetime(str(year)) for year in years[1:]],
+        normed_elec_prices[1:] - normed_elec_prices[:-1],
+        label="electricity prices (normed)",
+    )
+    plt.legend()
+
+    plt.show()
+
+
+# TODO: calculate correlation between installed pv and difference (percentage) of electricity prices
+def plot_correlation(
+    years: list,
+    municipalities: list,
+    data_electricity_prices: pd.DataFrame,
+    max_class=5,
+):
+    list_change_electricity_prices_percentage = []
+    list_installation_rate_normalized = []
+    # those are the years the electricity differences are calculated.
+    years_diff = years[1:-1]
+    for muni in tqdm(municipalities):
+        if muni is None:
+            continue
+        muni = muni.replace("/", "_")
+
+        try:
+            data = gpd.read_file(
+                f"out/municipalities/{muni}/{muni}_5.0_KLASSE2.gpkg"
+            )
+        except Exception as e:
+            print(e)
+            print(muni)
+            continue
+
+        data_loc = data_electricity_prices[
+            data_electricity_prices["municipality"] == muni
+        ]
+        if data.empty or data_loc.empty:
+            continue
+        electricity_prices = np.array(
+            [
+                data_loc[data_loc["year"] == year]["energy"].mean()
+                for year in years
+            ]
+        )
+        # calculate difference of electricity prices (in percentages) and remove the last year to account for boundary effects
+        if (
+            np.min(electricity_prices) <= 0.0
+            or np.isnan(electricity_prices).any()
+        ):
+            # print(electricity_prices, muni)
+            electricity_prices[electricity_prices == 0.0] = np.nanmean(
+                electricity_prices
+            )
+            electricity_prices[np.isnan(electricity_prices)] = np.nanmean(
+                electricity_prices
+            )
+            # print(electricity_prices, muni)
+        electricity_prices = (
+            electricity_prices[1:-1] - electricity_prices[:-2]
+        ) / electricity_prices[:-2]
+        assert len(electricity_prices) == len(years_diff)
+        # print(electricity_prices)
+        # print(years_diff)
+
+        # data = gpd.read_file(f"out/households_5.0_KLASSE2.gpkg")
+        data = data[data["KLASSE2"] <= max_class]
+
+        data_with_PV = data[data["SubCategory"] == "with_PV"]
+
+        data_with_PV.loc[:, "BeginningOfOperation"] = pd.to_datetime(
+            data_with_PV["BeginningOfOperation"], errors="coerce"
+        )
+        # data_with_PV.loc[:, "BeginningOfOperation"] = np.asarray(
+        #     data_with_PV["BeginningOfOperation"], dtype="datetime64[s]"
+        # )
+        data_with_PV = data_with_PV[
+            data_with_PV["BeginningOfOperation"]
+            >= pd.to_datetime(str(min(years)))
+        ]
+        if data_with_PV.empty:
+            continue
+
+        data_with_PV = data_with_PV.infer_objects()
+
+        data_with_PV.set_index("BeginningOfOperation", inplace=True)
+        data_with_PV = data_with_PV.sort_index()
+        yearly_installations = (
+            data_with_PV["TotalPower"]
+            .cumsum()
+            .resample("YE")
+            .last()
+            .ffill()
+            .diff()
+        )
+        yearly_installations = yearly_installations[
+            yearly_installations.index.year.isin(years_diff)
+        ]
+        yearly_installations.index = yearly_installations.index.year
+        # TODO: what to do if the dimensions do not match up? add 0 as installed amount?
+        if len(yearly_installations) != len(years_diff):
+            yearly_installations = yearly_installations.reindex(
+                years_diff, fill_value=0
+            )
+
+        if sum(yearly_installations) == 0.0:
+            continue
+        list_change_electricity_prices_percentage.extend(electricity_prices)
+        # print(yearly_installations)
+        yearly_installations = yearly_installations / sum(yearly_installations)
+        # print(yearly_installations)
+        list_installation_rate_normalized.append(yearly_installations.values)
+
+    list_installation_rate_normalized = np.concatenate(
+        list_installation_rate_normalized
+    )
+    list_change_electricity_prices_percentage = np.asarray(
+        list_change_electricity_prices_percentage
+    )
+    mask = ~(
+        np.isnan(list_installation_rate_normalized)
+        | np.isnan(list_change_electricity_prices_percentage)
+    )
+    list_installation_rate_normalized = list_installation_rate_normalized[mask]
+    list_change_electricity_prices_percentage = (
+        list_change_electricity_prices_percentage[mask]
+    )
+
+    # print(list_installation_rate_normalized)
+    # print(list_change_electricity_prices_percentage)
+    plt.plot(
+        list_change_electricity_prices_percentage,
+        list_installation_rate_normalized,
+        linestyle="none",
+        marker=".",
+    )
+
+    # Step 1: Fit a line y = m*x + b
+    m, b = np.polyfit(
+        np.array(list_change_electricity_prices_percentage),
+        np.array(list_installation_rate_normalized),
+        deg=1,
+    )
+
+    # Step 2: Generate x values for the line (spanning the domain of l1)
+    x_fit = np.linspace(
+        min(list_change_electricity_prices_percentage),
+        max(list_change_electricity_prices_percentage),
+        100,
+    )
+    y_fit = m * x_fit + b
+    plt.plot(x_fit, y_fit)
+
+    installation_rate_predication = (
+        m * list_change_electricity_prices_percentage + b
+    )
+
+    ss_res = np.sum(
+        (installation_rate_predication - list_installation_rate_normalized)
+        ** 2
+    )
+    ss_tot = np.sum(
+        (
+            np.mean(list_installation_rate_normalized)
+            - list_installation_rate_normalized
+        )
+        ** 2
+    )
+    r_squared = 1 - (ss_res / ss_tot)
+    print(f"r2 for max_class: {max_class} is {r_squared}")
+
+    plt.savefig(f"out/correlations_max_{max_class}.pdf")
+    # print(yearly_installations)
+    # print(yearly_installations.index.year)
+
+    pass
+
+
+def generate_installation_rate_vs_electricity_price_plot(municipalities: list):
+    years = [year for year in range(2009, 2025)]
+    data_electricity_prices = get_merged_data(years)
+    # for municipality in municipalities:
+    #     plot_price_vs_installation_rate(
+    #         years, municipality, data_electricity_prices
+    #     )
+
+    for i in range(1, 6):
+        plot_correlation(
+            years, municipalities, data_electricity_prices, max_class=i
+        )
+
+
+# working but slow, could be much more efficient
+def generate_evolution_classes_switzerland(
+    # data: gpd.GeoDataFrame, dirname: str, filename: str, app: str = ""
+):
+    plt.figure(figsize=(6, 4))
+    data = gpd.read_file("out/households_5.0_KLASSE2.gpkg")
+
+    plt.title(
+        "Overview of installation of PV plants based on class of rooftop"
+    )
+    plt.ylabel("total Power installed [kW]")
+    plt.xlabel("date")
+    data_with_PV = data[data["SubCategory"] == "with_PV"]
+    # unique_households_with_pv = data_with_PV["SB_UUID"].unique()
+    # TODO: create an efficient datastructure with 3 different entries: BeginningOfOperation(time format), class (1-5), TotalPower(float)
+    # create 5 series to plot them efficiently
+
+    # skip empty data, could be done better
+    # is_empty = True
+    # for idx in datapoints.keys():
+    #     if not datapoints[idx].empty:
+    data_with_PV.loc[:, "BeginningOfOperation"] = pd.to_datetime(
+        data_with_PV["BeginningOfOperation"], errors="coerce"
+    )
+    # data_with_PV.loc[:, "BeginningOfOperation"] = np.asarray(
+    #     data_with_PV["BeginningOfOperation"], dtype="datetime64[s]"
+    # )
+    data_with_PV = data_with_PV[
+        data_with_PV["BeginningOfOperation"] >= pd.to_datetime("2014")
+    ]
+
+    data_with_PV = data_with_PV.infer_objects()
+
+    data_with_PV.set_index("BeginningOfOperation", inplace=True)
+    data_with_PV = data_with_PV.sort_index()
+
+    cumulated_values = pd.DataFrame(
+        data=0.0,
+        index=pd.date_range(
+            start=data_with_PV.index.min(),
+            end=data_with_PV.index.max(),
+            freq="D",
+        ),
+        columns=["TotalPower"],
+    )
+    plt.plot(cumulated_values)
+    print(cumulated_values)
+    for class_idx in range(1, 6):
+        class_data = data_with_PV[data_with_PV["KLASSE2"] == class_idx]
+        power_unique = class_data["TotalPower"].groupby(class_data.index).sum()
+        tmp = cumulated_values["TotalPower"].add(power_unique, fill_value=0)
+        plt.fill_between(
+            cumulated_values.index,
+            cumulated_values["TotalPower"].cumsum(),
+            tmp.cumsum(),
+            alpha=0.7,
+            label=f"rooftop class {class_idx}",
+        )
+        cumulated_values["TotalPower"] = tmp
+    plt.legend()
+
+    plt.savefig("out/Switzerland/evolution_switzerland.jpg", dpi=1200)

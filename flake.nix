@@ -10,6 +10,7 @@
         inherit system;
         # config.allowUnfree = true;
       };
+      graphly = pkgs.callPackage ./graphly/graphly {};
       
     in
     {
@@ -18,6 +19,7 @@
       devShell.${system} = pkgs.mkShell rec {
         nativeBuildInputs = with pkgs; [
         qgis
+        openssl
 
         (python312.withPackages (ps: with ps;
                   [
@@ -25,13 +27,23 @@
                     ipython
                     black
 
+                    grequests
+                    
+
                     matplotlib
+                    plotly
+
                     numpy
                     shapely
                     gdal
                     pandas
                     geopandas
                     fiona
+
+                    folium
+                    mapclassify
+                    # graphly
+                  
                     
                     scipy
         #             tkinter
@@ -41,7 +53,13 @@
                     ray
                     dask
                     dask-expr
+
+
+                    urllib3
+                    sparqlwrapper
                   ]))
+          pipenv
+
         ];
         buildInputs = with pkgs; [ 
         ];
