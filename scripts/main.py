@@ -25,6 +25,12 @@ def generate_plot_of_single_file(
     data = gpd.read_file(
         os.path.join(dirname, filename, filename + specifier + ".gpkg")
     )
+    # used to analyze only rooftops where at least one part is covered with a PV system
+    # data = data[
+    #     data.groupby("SB_UUID")["SubCategory"].transform(
+    #         lambda x: (x == "with_PV").any()
+    #     )
+    # ]
     if specifier.endswith("KLASSE"):
         generate_roof_quality_plot(
             data, dirname, filename, class_name="KLASSE"
@@ -125,7 +131,7 @@ def create_specific_plots():
     # generate_plot_of_single_file(
     #     "out/municipalities", "Thun", specifier="_5.0_KLASSE2"
     # )
-    # generate_plot_of_single_file("out/cantons", "ZH")
+    generate_plot_of_single_file("out/cantons", "ZH", specifier="_5.0_KLASSE2")
 
     # run_municipal(False, True, specifier="_5.0_KLASSE2")
     # run_canton(False, True, specifier="_5.0_KLASSE2")
@@ -137,7 +143,22 @@ def create_specific_plots():
     #     use_arrow=True,
     # )
 
-    plot_two_locations("Aarau", "Thun")
+    # plot_two_locations("Aarau", "Thun")
+
+    # plot roof distribution of switzerland
+    # data = gpd.read_file("out/households_5.0_KLASSE2.gpkg")
+    # data = data[
+    #     data.groupby("SB_UUID")["SubCategory"].transform(
+    #         lambda x: (x == "with_PV").any()
+    #     )
+    # ]
+
+    # generate_roof_quality_plot(
+    #     data=data,
+    #     dirname="out/switzerland",
+    #     filename="switzerland",
+    #     class_name="KLASSE2",
+    # )
 
 
 if __name__ == "__main__":

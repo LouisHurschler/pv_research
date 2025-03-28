@@ -57,6 +57,10 @@
 
                     urllib3
                     sparqlwrapper
+                    openpyxl
+
+                    distutils
+                    scikit-learn
                   ]))
           pipenv
 
