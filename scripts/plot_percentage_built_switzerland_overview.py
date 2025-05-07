@@ -92,9 +92,9 @@ if __name__ == "__main__":
     data_boundaries = change_names(gpd.read_file("data/muni_boundaries.gpkg"))
     # data_boundaries.plot()
     # plt.show()
-    data_switzerland = gpd.read_file("out/households_5.0_KLASSE2.gpkg")
 
     data_energy_prices = gpd.read_file("data/municipal_and_energy_data.gpkg")
+    data_switzerland = gpd.read_file("out/households_5.0_KLASSE2.gpkg")
     custom_cmap = truncate_colormap(cm.viridis, -0.6, 0.8)
     # munis = sorted(
     #     data_switzerland["GDE_NAME"].unique(),
@@ -140,6 +140,8 @@ if __name__ == "__main__":
     merged_with_energy_prices = data_energy_prices.drop_duplicates(
         "municipality"
     ).merge(mean_energy_prices, on="municipality", how="left")
+    # NOTE: fill missing values with 6.0 here to have good visual plot.
+    merged_with_energy_prices = merged_with_energy_prices.fillna(8.5)
 
     merged_with_energy_prices.plot(
         column="mean_energy",

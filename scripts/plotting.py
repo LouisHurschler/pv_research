@@ -99,25 +99,34 @@ def cleanup_data(
     data = remove_large_plants(data, threshold=threshold)
     data = data[data["BeginningOfOperation"] > start_date]
     data_with_PV = data[data["SubCategory"] == "with_PV"]
+
+    # We only need those cols
     data_with_PV = data_with_PV.dropna()
+    data_with_PV = data_with_PV[["BeginningOfOperation", "TotalPower"]]
+
     data_with_PV["BeginningOfOperation"] = np.asarray(
         data_with_PV["BeginningOfOperation"], dtype="datetime64[s]"
     )
     data_with_PV.set_index("BeginningOfOperation", inplace=True)
     data_with_PV = data_with_PV.sort_index()
+
+    # add them if registered at same date
+    data_with_PV = data_with_PV.groupby(data_with_PV.index).sum()
+
     data_with_PV["cumulatedPower"] = data_with_PV["TotalPower"].cumsum()
-    cumulated_sum = data_with_PV["TotalPower"].cumsum()
+    # cumulated_sum = data_with_PV["TotalPower"].cumsum()
 
-    smoothed1 = (
-        data_with_PV["TotalPower"].cumsum().resample("W").last().ffill().diff()
-    )
-    numeric_timestamps = cumulated_sum.index.astype(np.int64)
-    kde = gaussian_kde(numeric_timestamps, weights=cumulated_sum)
-    smoothed_values = kde(numeric_timestamps)
+    # smoothed1 = (
+    #     data_with_PV["TotalPower"].cumsum().resample("W").last().ffill().diff()
+    # )
+    # numeric_timestamps = cumulated_sum.index.astype(np.int64)
+    # kde = gaussian_kde(numeric_timestamps, weights=cumulated_sum)
 
-    smoothed_cumulated = pd.Series(smoothed_values, index=cumulated_sum.index)
-    smoothed = smoothed_cumulated
-    smoothed = cumulated_sum
+    # smoothed_values = kde(numeric_timestamps)
+
+    # smoothed_cumulated = pd.Series(smoothed_values, index=cumulated_sum.index)
+    # smoothed = smoothed_cumulated
+    # smoothed = cumulated_sum
 
     # smoothed = smoothed_cumulated.resample("M").last().ffill().diff()
 
@@ -139,9 +148,21 @@ def generate_roof_quality_plot(
     dirname: str,
     filename: str,
     class_name: str = "KLASSE",
+    built_until: pd.Timestamp = None,
 ):
-    data_with_PV = data[data["SubCategory"] == "with_PV"]
-    data_without_PV = data[data["SubCategory"] != "with_PV"]
+    data["BeginningOfOperation"] = pd.to_datetime(
+        data["BeginningOfOperation"], errors="coerce"
+    )
+    if built_until is None:
+        data_with_PV = data[data["SubCategory"] == "with_PV"].copy()
+        data_without_PV = data[data["SubCategory"] != "with_PV"].copy()
+    else:
+        condition = (data["SubCategory"] == "with_PV") & (
+            (data["BeginningOfOperation"] < built_until)
+            | (data["BeginningOfOperation"].isna())
+        )
+        data_with_PV = data[condition].copy()
+        data_without_PV = data[~condition].copy()
 
     area_with = (
         data_with_PV.groupby(class_name)["FLAECHE"].sum().rename("area_with")
@@ -185,10 +206,20 @@ def generate_roof_quality_plot(
 
     fig, ax1 = plt.subplots(figsize=(6, 4))
 
-    # plt.title(
-    #     f"Distribution of PV Installations: Municipality {filename}",
-    #     fontsize=fontsize,
-    # )
+    if built_until is None:
+        plot_title = (
+            f"Distribution of PV Installations: Municipality {filename}"
+        )
+    else:
+        plot_title = (
+            f"Distribution of PV Installations built "
+            f"until {built_until}: Municipality {filename}"
+        )
+
+    plt.title(
+        plot_title,
+        fontsize=fontsize,
+    )
     # color_green = "#2CA02C"
     # color_red = "#D62728"
     color_green = "#27AE60"
@@ -250,10 +281,13 @@ def generate_roof_quality_plot(
     if not os.path.exists(os.path.join(dirname, filename)):
         os.makedirs(os.path.join(dirname, filename))
 
+    if built_until is None:
+        filename2 = f"roof_quality_{filename}_{class_name}.jpg"
+    else:
+        filename2 = f"roof_quality_{filename}_{class_name}_{built_until}.jpg"
+
     plt.savefig(
-        os.path.join(
-            dirname, filename, f"roof_quality_{filename}_{class_name}.jpg"
-        ),
+        os.path.join(dirname, filename, filename2),
         dpi=1200,
     )
     plt.close()
@@ -618,7 +652,7 @@ def plot_two_locations(
     ax1.tick_params(axis="x", labelsize=fontsize)
 
     ax1.set_ylabel(
-        r"\textbf{--------} \ \ \ PV Installation Rate in Aarau [kWp/year]",
+        rf"\textbf{{--------}} \ \ \ PV Installation Rate in {name1} [kWp/year]",
         color=color1,
         fontsize=fontsize,
     )
@@ -635,27 +669,61 @@ def plot_two_locations(
     )
     ax2.tick_params(axis="y", labelcolor=color2, labelsize=fontsize)
     ax2.set_ylabel(
-        r"\textbf{-- -- --} \ \ \ PV Installation Rate in Thun [kWp/year]",
+        rf"\textbf{{-- -- --}} \ \ \ PV Installation Rate in {name2} [kWp/year]",
         color=color2,
         fontsize=fontsize,
     )
     # ax2.set_yticks([0, 500, 1000, 1500, 2000, 2500])
 
-    ax2.annotate(
-        "Introduction of Aarau's new energy support directive",
-        xy=(
-            pd.Timestamp("2018-03-14"),
-            max(data2_with_PV["rollingMean"]) * 0.28,
-        ),
-        xytext=(
-            pd.Timestamp("2013-11-01"),
-            max(data2_with_PV["rollingMean"]) * 1.45,
-            # max(data2_with_PV["rollingMean"]) * 1.4,
-            # max(data2_with_PV["rollingMean"]) * 0.8,
-        ),
-        arrowprops=dict(facecolor="black", arrowstyle="->", lw=0.5),
-        fontsize=fontsize,
-    )
+    if name1 == "Aarau" or name2 == "Aarau":
+        ax2.annotate(
+            "Introduction of Aarau's new energy support directive",
+            xy=(
+                pd.Timestamp("2018-03-14"),
+                max(data2_with_PV["rollingMean"]) * 0.28,
+            ),
+            xytext=(
+                pd.Timestamp("2013-11-01"),
+                max(data2_with_PV["rollingMean"]) * 1.45,
+                # max(data2_with_PV["rollingMean"]) * 1.4,
+                # max(data2_with_PV["rollingMean"]) * 0.8,
+            ),
+            arrowprops=dict(facecolor="black", arrowstyle="->", lw=0.5),
+            fontsize=fontsize,
+        )
+    if name1 == "Cham" or name2 == "Cham":
+        ax2.annotate(
+            "Introduction of Cham's new energy support directive",
+            xy=(
+                pd.Timestamp("2022-11-08"),
+                max(data2_with_PV["rollingMean"]) * 1.13,
+            ),
+            xytext=(
+                pd.Timestamp("2013-11-01"),
+                max(data2_with_PV["rollingMean"]) * 1.45,
+                # max(data2_with_PV["rollingMean"]) * 1.4,
+                # max(data2_with_PV["rollingMean"]) * 0.8,
+            ),
+            arrowprops=dict(facecolor="black", arrowstyle="->", lw=0.5),
+            fontsize=fontsize,
+        )
+
+    if name1 == "Landquart" or name2 == "Landquart":
+        ax2.annotate(
+            "Introduction of Landquart's new energy support directive",
+            xy=(
+                pd.Timestamp("2021-06-01"),
+                max(data2_with_PV["rollingMean"]) * 1.04,
+            ),
+            xytext=(
+                pd.Timestamp("2013-11-01"),
+                max(data2_with_PV["rollingMean"]) * 1.45,
+                # max(data2_with_PV["rollingMean"]) * 1.4,
+                # max(data2_with_PV["rollingMean"]) * 0.8,
+            ),
+            arrowprops=dict(facecolor="black", arrowstyle="->", lw=0.5),
+            fontsize=fontsize,
+        )
 
     fig.tight_layout()
     ax1.grid(linestyle="--", axis="y")

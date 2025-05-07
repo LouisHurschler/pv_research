@@ -151,7 +151,7 @@ def get_municipal_data() -> gpd.GeoDataFrame:
 
 def get_merged_data(years: list, categories: list = ["H3"]) -> pd.DataFrame:
 
-    data_available = True
+    data_available = False
 
     if data_available:
         merged = gpd.read_file("data/municipal_and_energy_data.gpkg")
@@ -165,7 +165,7 @@ def get_merged_data(years: list, categories: list = ["H3"]) -> pd.DataFrame:
 
         merged = muni_data.merge(
             tariffs,
-            how="inner",
+            how="left",
             on="municipality_id",
         )
         merged = merged.set_crs(epsg=4326)

@@ -10,7 +10,7 @@ import json
 from tqdm import tqdm
 
 
-def generate_distribution_plot_switzerland():
+def generate_distribution_plot_switzerland() -> None:
     data = gpd.read_file(os.path.join("out", "households.gpkg"))
 
     # data_trimmed = remove_large_plants(data, threshold=100)
@@ -20,8 +20,8 @@ def generate_distribution_plot_switzerland():
 
 
 def generate_plot_of_single_file(
-    dirname: str, filename: str, specifier: str = ""
-):
+    dirname: str, filename: str, specifier: str = "", built_until=None
+) -> None:
     data = gpd.read_file(
         os.path.join(dirname, filename, filename + specifier + ".gpkg")
     )
@@ -33,21 +33,64 @@ def generate_plot_of_single_file(
     # ]
     if specifier.endswith("KLASSE"):
         generate_roof_quality_plot(
-            data, dirname, filename, class_name="KLASSE"
+            data,
+            dirname,
+            filename,
+            class_name="KLASSE",
+            built_until=built_until,
         )
     elif specifier.endswith("KLASSE2"):
         generate_roof_quality_plot(
-            data, dirname, filename, class_name="KLASSE2"
+            data,
+            dirname,
+            filename,
+            class_name="KLASSE2",
+            built_until=built_until,
         )
     else:
-        generate_roof_quality_plot(data, dirname, filename)
+        generate_roof_quality_plot(
+            data, dirname, filename, built_until=built_until
+        )
+
+
+def generate_plots_aarau(
+    have_to_generate_data: bool = True,
+    have_to_plot_data: bool = True,
+    specifier="_5.0_KLASSE2",
+    built_until_list=[
+        pd.to_datetime(str(year)) for year in range(2015, 2027, 1)
+    ]
+    + [None],
+) -> None:
+    name_aarau = "Aarau"
+    if have_to_generate_data:
+        data = gpd.read_file(
+            os.path.join("out", "households" + specifier + ".gpkg")
+        )
+        generate_data(
+            data, name_aarau, folder="municipalities", specifier=specifier
+        )
+        print(f"data for aarau generated with specifier: {specifier}")
+
+    if have_to_plot_data:
+        path = os.path.join("out", "municipalities")
+        if built_until_list is not None:
+            for built_until in built_until_list:
+                generate_plot_of_single_file(
+                    path,
+                    name_aarau,
+                    specifier=specifier,
+                    built_until=built_until,
+                )
+                print(built_until)
+        print(f"plot for aarau generated with specifier: {specifier}")
 
 
 def run_municipal(
     have_to_generate_data: bool = True,
     have_to_plot_data: bool = True,
     specifier: str = "_5.0_KLASSE",
-):
+) -> None:
 
     if have_to_generate_data:
         data = gpd.read_file(
@@ -166,10 +209,17 @@ if __name__ == "__main__":
     gpd.options.io_engine = "pyogrio"
     os.environ["PYOGRIO_USE_ARROW"] = "1"
 
-    # should be done only once at the beginning
-    # preprocess_data()
+    plot_two_locations("Cham", "Switzerland")
+    plot_two_locations("Landquart", "Switzerland")
+    # plot_two_locations("Aarau", "Thun")
+
+    # do this once
+    data_already_preprocessed = True
+    if not data_already_preprocessed:
+        preprocess_data()
 
     # data_to_roofs("KLASSE", 5.0, do_redistribution=False)
     # data_to_roofs("KLASSE2", 5.0, do_redistribution=False)
 
-    create_specific_plots()
+    # generate_plots_aarau(have_to_generate_data=False)
+    # create_specific_plots()
